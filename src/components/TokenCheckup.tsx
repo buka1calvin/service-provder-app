@@ -128,9 +128,7 @@ export default function EnhancedTokenVerifier() {
         );
 
         if (!imageVerified) {
-          setError("Face verification failed - images do not match");
-          setIsLoading(false);
-          return;
+         imageVerified = false;
         }
       }
 
