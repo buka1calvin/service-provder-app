@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import React, { useState, useEffect } from "react";
 
@@ -18,37 +19,40 @@ import {
   Camera,
   Settings,
   Activity,
+  ArrowRight,
+  Timer,
+  Scan,
+  AlertCircle,
 } from "lucide-react";
-import { BiometricCapture, ImageCapture } from "./biometric";
-import { apiService } from "@/lib/api/verify";
 
 export default function EnhancedTokenVerifier() {
   const [token, setToken] = useState("");
   const [serviceName, setServiceName] = useState("");
   const [selectedMethod, setSelectedMethod] = useState<
-    "biometric" | "image" | "both"
-  >("biometric");
+    "image" | "both"
+  >("image");
+  const [biometricStep, setBiometricStep] = useState<
+    "select" | "pending" | "processing" | "completed"
+  >("select");
   const [isLoading, setIsLoading] = useState(false);
   const [isTokenValidating, setIsTokenValidating] = useState(false);
   const [verificationResult, setVerificationResult] = useState<any>(null);
   const [error, setError] = useState("");
   const [showToken, setShowToken] = useState(false);
-  const [biometricData, setBiometricData] = useState({
-    fingerprint: "",
-    image: "",
-  });
   const [storedImageUrl, setStoredImageUrl] = useState<string>("");
   const [availableMethods, setAvailableMethods] = useState<any>(null);
   const [biometricHash, setBiometricHash] = useState("");
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [isCapturing, setIsCapturing] = useState<boolean>(false);
   const [tokenValidated, setTokenValidated] = useState(false);
   const [userInfo, setUserInfo] = useState<any>(null);
+  const [countdown, setCountdown] = useState<number>(300); // 5 minutes countdown
+  const [pollAttempts, setPollAttempts] = useState<number>(0);
 
   const VERIFY_ENDPOINT =
     "http://bkyz2-fmaaa-aaaaa-qaaaq-cai.raw.localhost:4943/biometric/verify-token";
-  const COMPLETE_VERIFY_ENDPOINT =
+  const START_BIOMETRIC_ENDPOINT =
     "http://bkyz2-fmaaa-aaaaa-qaaaq-cai.raw.localhost:4943/biometric/complete-verify";
+    const POLLING_RESULT_ENDPOINT =
+    "http://bkyz2-fmaaa-aaaaa-qaaaq-cai.raw.localhost:4943/biometric/latest-result";
 
   // Auto-validate token when it changes and meets minimum length
   useEffect(() => {
@@ -59,6 +63,7 @@ export default function EnhancedTokenVerifier() {
         setBiometricHash("");
         setStoredImageUrl("");
         setAvailableMethods(null);
+        setBiometricStep("select");
         return;
       }
 
@@ -86,15 +91,18 @@ export default function EnhancedTokenVerifier() {
           setTokenValidated(true);
           setUserInfo(data.userInfo);
           setError("");
+          setBiometricStep("select");
         } else {
           setTokenValidated(false);
           setUserInfo(null);
           setError(data.message || "Token validation failed");
+          setBiometricStep("select");
         }
       } catch (err: any) {
         setTokenValidated(false);
         setUserInfo(null);
         setError(err.message || "Token validation request failed");
+        setBiometricStep("select");
       } finally {
         setIsTokenValidating(false);
       }
@@ -104,7 +112,35 @@ export default function EnhancedTokenVerifier() {
     return () => clearTimeout(debounceTimer);
   }, [token, serviceName]);
 
-  const handleCompleteVerification = async () => {
+  // Countdown timer for biometric session timeout
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    
+    if (biometricStep === "pending" && countdown > 0) {
+      timer = setInterval(() => {
+        setCountdown((prev) => {
+          if (prev <= 1) {
+            setBiometricStep("select");
+            setError("Biometric session expired. Please try again.");
+            return 300;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [biometricStep, countdown]);
+
+  const formatTime = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, "0")}`;
+  };
+
+  const handleStartBiometric = async () => {
     if (!tokenValidated) {
       setError("Please enter a valid token first");
       return;
@@ -112,88 +148,91 @@ export default function EnhancedTokenVerifier() {
 
     setIsLoading(true);
     setError("");
+    setPollAttempts(0);
+    setBiometricStep("pending");
 
     try {
-      let imageVerified = false;
-
-      // Handle image verification if needed
-      if (
-        (selectedMethod === "image" || selectedMethod === "both") &&
-        storedImageUrl &&
-        biometricData.image
-      ) {
-        imageVerified = await apiService.compareImages(
-          storedImageUrl,
-          biometricData.image
-        );
-
-        if (!imageVerified) {
-         imageVerified = false;
-        }
-      }
-
-      // Validate biometric data based on method
-      if (selectedMethod === "biometric" || selectedMethod === "both") {
-        if (!biometricData.fingerprint) {
-          setError("Fingerprint capture required");
-          setIsLoading(false);
-          return;
-        }
-      }
-
-      if (selectedMethod === "image" || selectedMethod === "both") {
-        if (!biometricData.image) {
-          setError("Face capture required");
-          setIsLoading(false);
-          return;
-        }
-      }
-
-      const requestBody: any = {
-        biometricHash: biometricHash,
-        service: serviceName.trim() || "General Access",
-        method: selectedMethod,
-        imageVerified: imageVerified,
-      };
-
-      if (selectedMethod === "biometric" || selectedMethod === "both") {
-        requestBody.biometricData = biometricData.fingerprint;
-      }
-
-      const response = await fetch(COMPLETE_VERIFY_ENDPOINT, {
+      // Call backend to start biometric verification (sets up webhook listener)
+      const result = await fetch(START_BIOMETRIC_ENDPOINT, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(requestBody),
+        body: JSON.stringify({
+          biometricHash: biometricHash,
+          service: serviceName.trim() || "General Access",
+          method: selectedMethod,
+        }),
       });
 
-      const data = await response.json();
+      const data = await result.json();
 
       if (data.success) {
-        setVerificationResult({
-          ...data,
-          requestedService: serviceName.trim() || "General Access",
-          verificationTime: new Date().toISOString(),
-        });
+        setCountdown(300); // Reset countdown
+        
+        // Start polling for results after a short delay
+        setTimeout(async () => {
+          setBiometricStep("processing");
+          try {
+            // Use the same polling logic as login
+            const verificationResult = await new Promise<any>((resolve, reject) => {
+              let pollCount = 0;
+              
+              const poll = setInterval(async () => {
+                try {
+                  pollCount++;
+                  setPollAttempts(pollCount);
+                  
+                  const response = await fetch(POLLING_RESULT_ENDPOINT);
+                  const pollingData = await response.json();
+                  
+                  if (pollingData.status === "completed") {
+                    clearInterval(poll);
+                    
+                    if (pollingData.success) {
+                      resolve(pollingData);
+                    } else {
+                      reject(new Error(pollingData.message));
+                    }
+                  } else if (pollingData.status === "expired") {
+                    clearInterval(poll);
+                    reject(new Error("Operation expired. Please try again."));
+                  }
+                  // Continue polling if status is "pending"
+                } catch (error: any) {
+                  clearInterval(poll);
+                  reject(
+                    new Error(
+                      error.response?.data?.message || error.message || "Network error"
+                    )
+                  );
+                }
+              }, 2000);
+            });
+
+            if (verificationResult.success) {
+              setVerificationResult({
+                ...verificationResult,
+                requestedService: serviceName.trim() || "General Access",
+                verificationTime: new Date().toISOString(),
+              });
+              setBiometricStep("completed");
+            }
+          } catch (error: any) {
+            setBiometricStep("select");
+            setError(error.message || "Biometric verification failed");
+          }
+        }, 2000); // Give user time to see the pending state
       } else {
-        setError(data.message || "Verification failed");
+        setBiometricStep("select");
+        setError(data.message || "Failed to start biometric verification");
       }
     } catch (err: any) {
-      setError(err.message || "Verification request failed");
+      setBiometricStep("select");
+      setError(err.message || "Biometric verification request failed");
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const handleBiometricCapture = (data: string) => {
-    setBiometricData((prev) => ({ ...prev, fingerprint: data }));
-    setError("");
-  };
-
-  const handleImageCapture = (url: string) => {
-    setBiometricData((prev) => ({ ...prev, image: url }));
-    setError("");
   };
 
   const copyToClipboard = (text: any) => {
@@ -205,12 +244,14 @@ export default function EnhancedTokenVerifier() {
     setServiceName("");
     setVerificationResult(null);
     setError("");
-    setBiometricData({ fingerprint: "", image: "" });
     setStoredImageUrl("");
     setAvailableMethods(null);
     setBiometricHash("");
     setTokenValidated(false);
     setUserInfo(null);
+    setBiometricStep("select");
+    setCountdown(300);
+    setPollAttempts(0);
   };
 
   const getServiceTypeColor = (service: string) => {
@@ -229,13 +270,236 @@ export default function EnhancedTokenVerifier() {
       '-apple-system,BlinkMacSystemFont,"Segoe UI","Roboto","Oxygen","Ubuntu","Cantarell","Open Sans","Helvetica Neue",sans-serif',
   };
 
-  const canVerify =
-    tokenValidated &&
-    ((selectedMethod === "biometric" && biometricData.fingerprint) ||
-      (selectedMethod === "image" && biometricData.image) ||
-      (selectedMethod === "both" &&
-        biometricData.fingerprint &&
-        biometricData.image));
+  const renderMethodSelection = () => (
+    <div className="space-y-4">
+      <div className="text-center">
+        <p className="text-sm text-gray-600 mb-4">
+          Choose your verification method:
+        </p>
+      </div>
+
+      <div 
+        className={`border-2 rounded-lg p-4 cursor-pointer transition-all ${
+          selectedMethod === "image" ? "border-blue-600 bg-blue-50" : "border-gray-200"
+        }`}
+        onClick={() => setSelectedMethod("image")}
+      >
+        <div className="flex items-center gap-3">
+          <Camera className="w-5 h-5" />
+          <div>
+            <h5 className="font-medium">Image Only</h5>
+            <p className="text-sm text-gray-600">Facial recognition verification</p>
+          </div>
+        </div>
+      </div>
+
+      <div 
+        className={`border-2 rounded-lg p-4 cursor-pointer transition-all ${
+          selectedMethod === "both" ? "border-blue-600 bg-blue-50" : "border-gray-200"
+        }`}
+        onClick={() => setSelectedMethod("both")}
+      >
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1">
+            <Camera className="w-4 h-4" />
+            <Fingerprint className="w-4 h-4" />
+          </div>
+          <div>
+            <h5 className="font-medium">Image + Fingerprint</h5>
+            <p className="text-sm text-gray-600">Enhanced security with both methods</p>
+          </div>
+        </div>
+      </div>
+
+      <button
+        onClick={handleStartBiometric}
+        disabled={isLoading || !tokenValidated}
+        className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 h-12 text-white font-medium rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        {isLoading ? (
+          <>
+            <Loader2 className="w-4 h-4 animate-spin" />
+            Starting Verification...
+          </>
+        ) : (
+          <>
+            Start Verification with {selectedMethod === "both" ? "Both Methods" : "Image Only"}
+            <ArrowRight className="w-4 h-4" />
+          </>
+        )}
+      </button>
+    </div>
+  );
+
+  const renderPendingBiometric = () => (
+    <div className="space-y-6">
+      <div className="text-center space-y-4">
+        <div className="relative">
+          <div className="w-20 h-20 bg-gradient-to-br from-blue-100 to-blue-200 rounded-full flex items-center justify-center mx-auto">
+            <Scan className="w-10 h-10 text-blue-600 animate-pulse" />
+          </div>
+          <div className="absolute -top-1 -right-1 w-6 h-6 bg-green-500 rounded-full flex items-center justify-center">
+            <CheckCircle className="w-4 h-4 text-white" />
+          </div>
+        </div>
+        <div>
+          <h4 className="text-xl font-semibold text-gray-900 mb-2">
+            Go to Biometric Scanner
+          </h4>
+          <p className="text-sm text-gray-600">
+            Please proceed to the scanner for {selectedMethod === "both" ? "image and fingerprint" : "image"} verification
+          </p>
+        </div>
+      </div>
+
+      <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-medium text-blue-900">Verification Session Active</span>
+          <div className="inline-flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded">
+            Ready
+          </div>
+        </div>
+        
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-blue-700">Time remaining:</span>
+          <div className="flex items-center gap-1 text-blue-800 font-mono">
+            <Timer className="w-3 h-3" />
+            {formatTime(countdown)}
+          </div>
+        </div>
+        
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-blue-700">Verification method:</span>
+          <div className="flex items-center gap-1 text-blue-800">
+            {selectedMethod === "both" ? (
+              <>
+                <Camera className="w-3 h-3" />
+                <Fingerprint className="w-3 h-3" />
+                <span className="text-xs">Both</span>
+              </>
+            ) : (
+              <>
+                <Camera className="w-3 h-3" />
+                <span className="text-xs">Image</span>
+              </>
+            )}
+          </div>
+        </div>
+        
+        <div className="w-full bg-blue-200 rounded-full h-2">
+          <div 
+            className="bg-blue-600 h-2 rounded-full transition-all duration-1000 ease-out"
+            style={{ width: `${(countdown / 300) * 100}%` }}
+          />
+        </div>
+      </div>
+
+      <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+        <div className="flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-yellow-600 mt-0.5 flex-shrink-0" />
+          <div className="space-y-1">
+            <p className="text-sm font-medium text-yellow-800">Instructions:</p>
+            <ul className="text-sm text-yellow-700 space-y-1">
+              <li>• Look directly at the camera for facial recognition</li>
+              {selectedMethod === "both" && (
+                <li>• Place your finger on the fingerprint scanner</li>
+              )}
+              <li>• Keep steady until verification completes</li>
+              <li>• Results will appear automatically upon completion</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <button
+        onClick={() => {
+          setBiometricStep("select");
+          setCountdown(300);
+        }}
+        className="w-full px-6 h-12 border text-gray-700 font-medium transition-colors hover:bg-gray-50"
+        style={{
+          ...linkedInFontStyle,
+          borderColor: "#d9d9d9",
+          borderRadius: "24px",
+          backgroundColor: "transparent",
+        }}
+      >
+        Cancel Verification
+      </button>
+    </div>
+  );
+
+  const renderProcessingBiometric = () => (
+    <div className="space-y-6">
+      <div className="text-center space-y-4">
+        <div className="relative">
+          <div className="w-20 h-20 bg-gradient-to-br from-green-100 to-emerald-200 rounded-full flex items-center justify-center mx-auto">
+            <Loader2 className="w-10 h-10 text-green-600 animate-spin" />
+          </div>
+          <div className="absolute inset-0 w-20 h-20 border-4 border-green-200 rounded-full animate-ping mx-auto"></div>
+        </div>
+        <div>
+          <h4 className="text-xl font-semibold text-gray-900 mb-2">
+            Processing Verification...
+          </h4>
+          <p className="text-sm text-gray-600">
+            Verifying your {selectedMethod === "both" ? "image and fingerprint" : "image"} data
+          </p>
+        </div>
+      </div>
+
+      <div className="bg-gradient-to-r from-green-50 to-emerald-50 border border-green-200 rounded-lg p-4">
+        <div className="flex items-center gap-3">
+          <div className="flex-shrink-0">
+            <CheckCircle className="w-5 h-5 text-green-600" />
+          </div>
+          <div className="space-y-1">
+            <p className="text-sm font-medium text-green-900">
+              {selectedMethod === "both" ? "Biometric Data Captured" : "Image Data Captured"}
+            </p>
+            <p className="text-sm text-green-700">
+              Authenticating your identity...
+            </p>
+          </div>
+        </div>
+        
+        <div className="mt-3 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-xs text-green-600">
+            <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+            <span>Secure processing in progress</span>
+          </div>
+          <div className="flex items-center gap-1">
+            {selectedMethod === "both" ? (
+              <>
+                <Camera className="w-3 h-3 text-green-600" />
+                <Fingerprint className="w-3 h-3 text-green-600" />
+              </>
+            ) : (
+              <Camera className="w-3 h-3 text-green-600" />
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-blue-700">Processing attempts:</span>
+            <span className="text-blue-800 font-mono">{pollAttempts}/150</span>
+          </div>
+          <div className="w-full bg-blue-200 rounded-full h-1">
+            <div 
+              className="bg-blue-600 h-1 rounded-full transition-all duration-500"
+              style={{ width: `${Math.min((pollAttempts / 150) * 100, 100)}%` }}
+            />
+          </div>
+          <div className="text-xs text-blue-600 text-center">
+            Verification method: {selectedMethod === "both" ? "Image + Fingerprint" : "Image Only"}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div className="min-h-screen p-4" style={{ backgroundColor: "#f3f2ef" }}>
@@ -258,7 +522,7 @@ export default function EnhancedTokenVerifier() {
             className="text-gray-600 text-base max-w-2xl mx-auto"
             style={linkedInFontStyle}
           >
-            Secure token verification with mandatory biometric authentication
+            Secure token verification with automated biometric authentication
             for all services.
           </p>
         </div>
@@ -276,273 +540,7 @@ export default function EnhancedTokenVerifier() {
               </div>
             </div>
             <div className="space-y-6 px-6 py-6">
-              {/* <div className="flex w-full">
-                <div>
-                  <div className="space-y-2">
-                    <label
-                      className="text-sm font-medium text-gray-900 block"
-                      style={linkedInFontStyle}
-                    >
-                      Access Token *
-                    </label>
-                    <div className="relative">
-                      <input
-                        type={showToken ? "text" : "password"}
-                        value={token}
-                        onChange={(e) => setToken(e.target.value)}
-                        placeholder="Enter your access token here..."
-                        className="w-full pr-12 px-3 py-3 border text-sm font-mono transition-colors focus:outline-none focus:border-blue-500"
-                        style={{
-                          ...linkedInFontStyle,
-                          borderColor: tokenValidated
-                            ? "#22c55e"
-                            : isTokenValidating
-                            ? "#f59e0b"
-                            : "#d9d9d9",
-                          borderRadius: "2px",
-                        }}
-                      />
-                      <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2">
-                        {isTokenValidating && (
-                          <Loader2 className="w-4 h-4 text-amber-500 animate-spin" />
-                        )}
-                        {tokenValidated && (
-                          <CheckCircle className="w-4 h-4 text-green-500" />
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => setShowToken(!showToken)}
-                          className="h-8 w-8 p-0 hover:bg-gray-100 transition-colors"
-                          style={{ borderRadius: "4px" }}
-                        >
-                          {showToken ? (
-                            <EyeOff className="w-4 h-4 text-gray-500" />
-                          ) : (
-                            <Eye className="w-4 h-4 text-gray-500" />
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                    {tokenValidated && userInfo && (
-                      <p
-                        className="text-xs text-green-600 flex items-center gap-1"
-                        style={linkedInFontStyle}
-                      >
-                        <CheckCircle className="w-3 h-3" />
-                        Token validated for {userInfo.firstName}{" "}
-                        {userInfo.lastName}
-                      </p>
-                    )}
-                  </div>
 
-                  <div className="space-y-2">
-                    <label
-                      className="text-sm font-medium text-gray-900 block"
-                      style={linkedInFontStyle}
-                    >
-                      Service Name
-                    </label>
-                    <input
-                      value={serviceName}
-                      onChange={(e) => setServiceName(e.target.value)}
-                      placeholder="e.g., Government Services, Banking Portal, Healthcare System"
-                      className="w-full px-3 py-3 border text-sm transition-colors focus:outline-none focus:border-blue-500"
-                      style={{
-                        ...linkedInFontStyle,
-                        borderColor: "#d9d9d9",
-                        borderRadius: "2px",
-                      }}
-                    />
-                  </div>
-                </div>
-                <div>
-                  {tokenValidated && availableMethods && (
-                    <>
-                      <div className="w-full h-px bg-gray-200"></div>
-
-                      <div className="space-y-4">
-                        <div className="text-center pb-4 border-b border-gray-200">
-                          <h3
-                            className="text-lg font-normal text-gray-900 mb-2"
-                            style={linkedInFontStyle}
-                          >
-                            Biometric Verification
-                          </h3>
-                          <p
-                            className="text-sm text-gray-600"
-                            style={linkedInFontStyle}
-                          >
-                            Complete biometric verification to access{" "}
-                            {serviceName || "the service"}
-                          </p>
-                        </div>
-
-                        <div className="space-y-3">
-                          <h5
-                            className="text-sm font-medium text-gray-900"
-                            style={linkedInFontStyle}
-                          >
-                            Select Verification Method
-                          </h5>
-                          <div
-                            className="flex flex-wrap gap-4 p-3 bg-gray-50"
-                            style={{ borderRadius: "4px" }}
-                          >
-                            {availableMethods?.biometric && (
-                              <label className="flex items-center gap-2 cursor-pointer">
-                                <input
-                                  type="radio"
-                                  name="method"
-                                  value="biometric"
-                                  checked={selectedMethod === "biometric"}
-                                  onChange={(e) =>
-                                    setSelectedMethod(
-                                      e.target.value as "biometric"
-                                    )
-                                  }
-                                  className="w-4 h-4"
-                                  style={{ accentColor: "#0a66c2" }}
-                                />
-                                <div className="flex items-center gap-1">
-                                  <Fingerprint className="w-4 h-4 text-gray-600" />
-                                  <span
-                                    className="text-sm font-normal text-gray-900"
-                                    style={linkedInFontStyle}
-                                  >
-                                    Fingerprint
-                                  </span>
-                                </div>
-                              </label>
-                            )}
-
-                            {availableMethods?.image && (
-                              <label className="flex items-center gap-2 cursor-pointer">
-                                <input
-                                  type="radio"
-                                  name="method"
-                                  value="image"
-                                  checked={selectedMethod === "image"}
-                                  onChange={(e) =>
-                                    setSelectedMethod(e.target.value as "image")
-                                  }
-                                  className="w-4 h-4"
-                                  style={{ accentColor: "#0a66c2" }}
-                                />
-                                <div className="flex items-center gap-1">
-                                  <Camera className="w-4 h-4 text-gray-600" />
-                                  <span
-                                    className="text-sm font-normal text-gray-900"
-                                    style={linkedInFontStyle}
-                                  >
-                                    Face
-                                  </span>
-                                </div>
-                              </label>
-                            )}
-
-                            {availableMethods?.biometric &&
-                              availableMethods?.image && (
-                                <label className="flex items-center gap-2 cursor-pointer">
-                                  <input
-                                    type="radio"
-                                    name="method"
-                                    value="both"
-                                    checked={selectedMethod === "both"}
-                                    onChange={(e) =>
-                                      setSelectedMethod(
-                                        e.target.value as "both"
-                                      )
-                                    }
-                                    className="w-4 h-4"
-                                    style={{ accentColor: "#0a66c2" }}
-                                  />
-                                  <div className="flex items-center gap-1">
-                                    <Fingerprint className="w-3 h-3 text-gray-600" />
-                                    <Camera className="w-3 h-3 text-gray-600" />
-                                    <span
-                                      className="text-sm font-normal text-gray-900"
-                                      style={linkedInFontStyle}
-                                    >
-                                      Both (Max Security)
-                                    </span>
-                                  </div>
-                                </label>
-                              )}
-                          </div>
-                        </div>
-
-                        <div
-                          className={`grid gap-4 ${
-                            selectedMethod === "both"
-                              ? "grid-cols-1 lg:grid-cols-2"
-                              : "grid-cols-1"
-                          }`}
-                        >
-                          {(selectedMethod === "biometric" ||
-                            selectedMethod === "both") && (
-                            <div className="space-y-3">
-                              <div className="flex items-center justify-between">
-                                <h6
-                                  className="text-sm font-medium text-gray-900 flex items-center gap-2"
-                                  style={linkedInFontStyle}
-                                >
-                                  <Fingerprint className="w-4 h-4 text-gray-600" />
-                                  Fingerprint
-                                </h6>
-                                {biometricData.fingerprint && (
-                                  <div className="flex items-center gap-1 text-green-600">
-                                    <CheckCircle className="w-4 h-4" />
-                                    <span
-                                      className="text-xs font-normal"
-                                      style={linkedInFontStyle}
-                                    >
-                                      Captured
-                                    </span>
-                                  </div>
-                                )}
-                              </div>
-                              <BiometricCapture
-                                onCapture={handleBiometricCapture}
-                                isCapturing={isCapturing}
-                              />
-                            </div>
-                          )}
-
-                          {(selectedMethod === "image" ||
-                            selectedMethod === "both") && (
-                            <div className="space-y-3">
-                              <div className="flex items-center justify-between">
-                                <h6
-                                  className="text-sm font-medium text-gray-900 flex items-center gap-2"
-                                  style={linkedInFontStyle}
-                                >
-                                  <Camera className="w-4 h-4 text-gray-600" />
-                                  Face Recognition
-                                </h6>
-                                {biometricData.image && (
-                                  <div className="flex items-center gap-1 text-green-600">
-                                    <CheckCircle className="w-4 h-4" />
-                                    <span
-                                      className="text-xs font-normal"
-                                      style={linkedInFontStyle}
-                                    >
-                                      Captured
-                                    </span>
-                                  </div>
-                                )}
-                              </div>
-                              <ImageCapture
-                                onCapture={handleImageCapture}
-                                isCapturing={isCapturing}
-                              />
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </>
-                  )}
-                </div>
-              </div> */}
               <div
                 className={`flex w-full ${
                   tokenValidated ? "flex-col lg:flex-row gap-6" : "flex-col"
@@ -645,169 +643,20 @@ export default function EnhancedTokenVerifier() {
                         </h3>
                       </div>
 
-                      <div className="space-y-3">
-                        <h5
-                          className="text-sm font-medium text-gray-900"
-                          style={linkedInFontStyle}
-                        >
-                          Select Verification Method
-                        </h5>
-                        <div
-                          className="flex flex-wrap gap-4 p-3 bg-gray-50"
-                          style={{ borderRadius: "4px" }}
-                        >
-                          {availableMethods?.biometric && (
-                            <label className="flex items-center gap-2 cursor-pointer">
-                              <input
-                                type="radio"
-                                name="method"
-                                value="biometric"
-                                checked={selectedMethod === "biometric"}
-                                onChange={(e) =>
-                                  setSelectedMethod(
-                                    e.target.value as "biometric"
-                                  )
-                                }
-                                className="w-4 h-4"
-                                style={{ accentColor: "#0a66c2" }}
-                              />
-                              <div className="flex items-center gap-1">
-                                <Fingerprint className="w-4 h-4 text-gray-600" />
-                                <span
-                                  className="text-sm font-normal text-gray-900"
-                                  style={linkedInFontStyle}
-                                >
-                                  Fingerprint
-                                </span>
-                              </div>
-                            </label>
-                          )}
-
-                          {availableMethods?.image && (
-                            <label className="flex items-center gap-2 cursor-pointer">
-                              <input
-                                type="radio"
-                                name="method"
-                                value="image"
-                                checked={selectedMethod === "image"}
-                                onChange={(e) =>
-                                  setSelectedMethod(e.target.value as "image")
-                                }
-                                className="w-4 h-4"
-                                style={{ accentColor: "#0a66c2" }}
-                              />
-                              <div className="flex items-center gap-1">
-                                <Camera className="w-4 h-4 text-gray-600" />
-                                <span
-                                  className="text-sm font-normal text-gray-900"
-                                  style={linkedInFontStyle}
-                                >
-                                  Face
-                                </span>
-                              </div>
-                            </label>
-                          )}
-
-                          {availableMethods?.biometric &&
-                            availableMethods?.image && (
-                              <label className="flex items-center gap-2 cursor-pointer">
-                                <input
-                                  type="radio"
-                                  name="method"
-                                  value="both"
-                                  checked={selectedMethod === "both"}
-                                  onChange={(e) =>
-                                    setSelectedMethod(e.target.value as "both")
-                                  }
-                                  className="w-4 h-4"
-                                  style={{ accentColor: "#0a66c2" }}
-                                />
-                                <div className="flex items-center gap-1">
-                                  <Fingerprint className="w-3 h-3 text-gray-600" />
-                                  <Camera className="w-3 h-3 text-gray-600" />
-                                  <span
-                                    className="text-sm font-normal text-gray-900"
-                                    style={linkedInFontStyle}
-                                  >
-                                    Both (Max Security)
-                                  </span>
-                                </div>
-                              </label>
-                            )}
+                      {biometricStep === "select" && renderMethodSelection()}
+                      {biometricStep === "pending" && renderPendingBiometric()}
+                      {biometricStep === "processing" && renderProcessingBiometric()}
+                      {biometricStep === "completed" && (
+                        <div className="text-center py-4">
+                          <CheckCircle className="w-12 h-12 text-green-600 mx-auto mb-2" />
+                          <p className="text-green-700 font-medium">Verification Complete!</p>
                         </div>
-                      </div>
-
-                      <div
-                        className={`grid gap-4 ${
-                          selectedMethod === "both"
-                            ? "grid-cols-1 lg:grid-cols-2"
-                            : "grid-cols-1"
-                        }`}
-                      >
-                        {(selectedMethod === "biometric" ||
-                          selectedMethod === "both") && (
-                          <div className="space-y-3">
-                            <div className="flex items-center justify-between">
-                              <h6
-                                className="text-sm font-medium text-gray-900 flex items-center gap-2"
-                                style={linkedInFontStyle}
-                              >
-                                <Fingerprint className="w-4 h-4 text-gray-600" />
-                                Fingerprint
-                              </h6>
-                              {biometricData.fingerprint && (
-                                <div className="flex items-center gap-1 text-green-600">
-                                  <CheckCircle className="w-4 h-4" />
-                                  <span
-                                    className="text-xs font-normal"
-                                    style={linkedInFontStyle}
-                                  >
-                                    Captured
-                                  </span>
-                                </div>
-                              )}
-                            </div>
-                            <BiometricCapture
-                              onCapture={handleBiometricCapture}
-                              isCapturing={isCapturing}
-                            />
-                          </div>
-                        )}
-
-                        {(selectedMethod === "image" ||
-                          selectedMethod === "both") && (
-                          <div className="space-y-3">
-                            <div className="flex items-center justify-between">
-                              <h6
-                                className="text-sm font-medium text-gray-900 flex items-center gap-2"
-                                style={linkedInFontStyle}
-                              >
-                                <Camera className="w-4 h-4 text-gray-600" />
-                                Face Recognition
-                              </h6>
-                              {biometricData.image && (
-                                <div className="flex items-center gap-1 text-green-600">
-                                  <CheckCircle className="w-4 h-4" />
-                                  <span
-                                    className="text-xs font-normal"
-                                    style={linkedInFontStyle}
-                                  >
-                                    Captured
-                                  </span>
-                                </div>
-                              )}
-                            </div>
-                            <ImageCapture
-                              onCapture={handleImageCapture}
-                              isCapturing={isCapturing}
-                            />
-                          </div>
-                        )}
-                      </div>
+                      )}
                     </div>
                   </div>
                 )}
               </div>
+
               <div
                 className="border bg-blue-50 p-3 flex items-start gap-2"
                 style={{ borderRadius: "4px", borderColor: "#0a66c2" }}
@@ -824,44 +673,8 @@ export default function EnhancedTokenVerifier() {
 
               <div className="flex gap-3">
                 <button
-                  onClick={handleCompleteVerification}
-                  disabled={isLoading || !canVerify}
-                  className="flex-1 h-12 flex items-center justify-center gap-2 text-white font-medium transition-colors disabled:opacity-50"
-                  style={{
-                    ...linkedInFontStyle,
-                    backgroundColor: canVerify ? "#057642" : "#9ca3af",
-                    borderRadius: "24px",
-                    border: "none",
-                    cursor: isLoading || !canVerify ? "not-allowed" : "pointer",
-                  }}
-                  onMouseEnter={(e) => {
-                    if (canVerify && !isLoading) {
-                      (e.target as HTMLButtonElement).style.backgroundColor =
-                        "#046139";
-                    }
-                  }}
-                  onMouseLeave={(e) => {
-                    if (canVerify && !isLoading) {
-                      (e.target as HTMLButtonElement).style.backgroundColor =
-                        "#057642";
-                    }
-                  }}
-                >
-                  {isLoading ? (
-                    <>
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      Verifying...
-                    </>
-                  ) : (
-                    <>
-                      <CheckCircle className="w-4 h-4 mr-2" />
-                      Complete Verification
-                    </>
-                  )}
-                </button>
-                <button
                   onClick={clearForm}
-                  className="px-6 h-12 border text-gray-700 font-medium transition-colors hover:bg-gray-50"
+                  className="flex-1 px-6 h-12 border text-gray-700 font-medium transition-colors hover:bg-gray-50"
                   style={{
                     ...linkedInFontStyle,
                     borderColor: "#d9d9d9",
@@ -869,7 +682,7 @@ export default function EnhancedTokenVerifier() {
                     backgroundColor: "transparent",
                   }}
                 >
-                  Clear
+                  Clear Form
                 </button>
               </div>
 
@@ -920,17 +733,10 @@ export default function EnhancedTokenVerifier() {
                     <strong>
                       {userInfo.firstName} {userInfo.lastName}
                     </strong>
-                  </p>
-                </div>
-              )}
-
-              {isLoading && (
-                <div className="text-center py-12 space-y-4">
-                  <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-50 rounded-lg">
-                    <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
-                  </div>
-                  <p className="text-gray-600" style={linkedInFontStyle}>
-                    Processing biometric verification...
+                    <br />
+                    <span className="text-sm text-gray-500 mt-1 block">
+                      Complete biometric verification to access the service
+                    </span>
                   </p>
                 </div>
               )}
@@ -995,14 +801,9 @@ export default function EnhancedTokenVerifier() {
                               ...linkedInFontStyle,
                             }}
                           >
-                            {verificationResult.verificationDetails.method ===
-                            "biometric"
-                              ? "Fingerprint"
-                              : verificationResult.verificationDetails
-                                  .method === "image"
+                            {verificationResult.verificationDetails.method === "image"
                               ? "Face Recognition"
-                              : verificationResult.verificationDetails
-                                  .method === "both"
+                              : verificationResult.verificationDetails.method === "both"
                               ? "Multi-Factor"
                               : verificationResult.verificationDetails.method}
                           </div>

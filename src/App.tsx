@@ -1,5 +1,4 @@
 import TokenVerificationTester from "./components/TokenCheckup"
-import { Button } from "./components/ui/button"
 
 
 function App() {
